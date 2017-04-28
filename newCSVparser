@@ -1,0 +1,298 @@
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include "newCSVparser.hpp"
+
+namespace csv {
+  /*
+  ** ROW
+  */
+
+  Row::Row(const std::vector<std::string> &header)
+      : _header(header) {}
+
+  Row::~Row(void) {}
+
+  unsigned int Row::size(void) const
+  {
+    return _values.size();
+  }
+
+  void Row::push(const std::string &value)
+  {
+    _values.push_back(value);
+  }
+
+  bool Row::set(const std::string &key, const std::string &value) 
+  {
+    std::vector<std::string>::const_iterator it;
+    int pos = 0;
+
+    for (it = _header.begin(); it != _header.end(); it++)
+    {
+        if (key == *it)
+        {
+          _values[pos] = value;
+          return true;
+        }
+        pos++;
+    }
+    return false;
+  }
+
+  const std::string Row::operator[](unsigned int valuePosition) const
+  {
+       if (valuePosition < _values.size())
+           return _values[valuePosition];
+       throw Error("can't return this value (doesn't exist)");
+  }
+
+  const std::string Row::operator[](const std::string &key) const
+  {
+      std::vector<std::string>::const_iterator it;
+      int pos = 0;
+
+      for (it = _header.begin(); it != _header.end(); it++)
+      {
+          if (key == *it)
+              return _values[pos];
+          pos++;
+      }
+      
+      throw Error("can't return this value (doesn't exist)");
+  }
+
+  std::ostream &operator<<(std::ostream &os, const Row &row)
+  {
+      for (unsigned int i = 0; i != row._values.size(); i++)
+          os << row._values[i] << " | ";
+
+      return os;
+  }
+
+  std::ofstream &operator<<(std::ofstream &os, const Row &row)
+  {
+    for (unsigned int i = 0; i != row._values.size(); i++)
+    {
+        os << row._values[i];
+        if (i < row._values.size() - 1)
+          os << ",";
+    }
+    return os;
+  }
+  //extend by yaoyuehan on 20170428 
+  //add << for fstream
+  std::fstream& operator<<(std::fstream& os, const Row &row)
+  {
+	  for (unsigned int i = 0; i != row._values.size(); i++)
+	  {
+		  os << row._values[i];
+		  if (i < row._values.size() - 1)
+			  os << ",";
+	  }
+	  return os;
+  }
+//extend by yaoyuehan on 20170428 
+//remove DataType for DataType::ePure is unstable
+  
+  /*
+  Writer
+  */
+  Writer::Writer(const std::string &fname, std::string header, char sep, const OPENTYPE &openType)
+	  : _sep(sep), _openType(openType)
+  {
+      
+      _fname = fname;
+	  if (_openType == OPENTYPE::NEW)
+	  {
+		  _fileStream.open(_fname.c_str(), std::ios::in | std::ios::out| std::ios::trunc);
+		  if (_fileStream.is_open())
+		  {
+			_originalFile.push_back(header);
+			_fileStream.close();
+
+			parseHeader();
+			parseContent();
+		  }
+		  else
+			  throw Error(std::string("Failed to open ").append(_fname));
+	  }
+	  else
+	  {
+		  std::string line;
+		  _fileStream.open(_fname.c_str(), std::ios::in | std::ios::out|std::ios::app);
+		  if (_fileStream.is_open())
+		  {
+			  while (_fileStream.good())
+			  {
+				  getline(_fileStream, line);
+				  if (line != "")
+					  _originalFile.push_back(line);
+			  }
+			  _fileStream.close();
+			  if (_originalFile.size() == 0)
+				  throw Error(std::string("No Data in ").append(_fname));
+			  parseHeader();
+			  parseContent();
+		  }
+		  else
+			  throw Error(std::string("Failed to open ").append(_fname));
+	  }
+  }
+
+  Writer::~Writer(void)
+  {
+    sync();
+    //free the memory in _content
+    std::vector<Row *>::iterator it;
+
+     for (it = _content.begin(); it != _content.end(); it++)
+          delete *it;
+  }
+  const std::string &Writer::getFileName(void) const
+  {
+      return _fname;    
+  }
+
+  void Writer::parseHeader(void)
+  {
+      std::stringstream ss(_originalFile[0]);
+      std::string item;
+
+      while (std::getline(ss, item, _sep))
+          _header.push_back(item);
+  }
+
+  void Writer::parseContent(void)
+  {
+     std::vector<std::string>::iterator it;
+     
+     it = _originalFile.begin();
+     it++; // skip header
+
+     for (; it != _originalFile.end(); it++)
+     {
+         bool quoted = false;
+         int tokenStart = 0;
+         unsigned int i = 0;
+
+         Row *row = new Row(_header);
+
+         for (; i != it->length(); i++)
+         {
+              if (it->at(i) == '"')
+                  quoted = ((quoted) ? (false) : (true));
+              else if (it->at(i) == ',' && !quoted)
+              {
+                  row->push(it->substr(tokenStart, i - tokenStart));
+                  tokenStart = i + 1;
+              }
+         }
+
+         //end
+         row->push(it->substr(tokenStart, it->length() - tokenStart));
+
+         // if value(s) missing
+         if (row->size() != _header.size())
+          throw Error("corrupted data !");
+         _content.push_back(row);
+     }
+  }
+
+  Row &Writer::getRow(unsigned int rowPosition) const
+  {
+      if (rowPosition < _content.size())
+          return *(_content[rowPosition]);
+      throw Error("can't return this row (doesn't exist)");
+  }
+
+  Row &Writer::operator[](unsigned int rowPosition) const
+  {
+      return Writer::getRow(rowPosition);
+  }
+
+  unsigned int Writer::rowCount(void) const
+  {
+      return _content.size();
+  }
+
+  unsigned int Writer::columnCount(void) const
+  {
+      return _header.size();
+  }
+
+  std::vector<std::string> Writer::getHeader(void) const
+  {
+      return _header;
+  }
+
+  const std::string Writer::getHeaderElement(unsigned int pos) const
+  {
+      if (pos >= _header.size())
+        throw Error("can't return this header (doesn't exist)");
+      return _header[pos];
+  }
+
+  bool Writer::deleteRow(unsigned int pos)
+  {
+    if (pos < _content.size())
+    {
+      delete *(_content.begin() + pos);
+      _content.erase(_content.begin() + pos);
+      return true;
+    }
+    return false;
+  }
+  bool Writer::addRow(const std::vector<std::string> &r)
+  {
+	  Row *row = new Row(_header);
+
+	  for (auto it = r.begin(); it != r.end(); it++)
+		  row->push(*it);
+
+	  _content.push_back(row);
+	  return true;
+
+  }
+  bool Writer::addRow(unsigned int pos, const std::vector<std::string> &r)
+  {
+    Row *row = new Row(_header);
+
+    for (auto it = r.begin(); it != r.end(); it++)
+      row->push(*it);
+    
+    if (pos <= _content.size())
+    {
+      _content.insert(_content.begin() + pos, row);
+      return true;
+    }
+    return false;
+  }
+
+  void Writer::sync(void) 
+  {
+	  _fileStream.open(_fname.c_str(), std::ios::in | std::ios::out|std::ios::trunc);
+	  if (_fileStream.is_open())
+      {
+        
+      }
+      else
+          throw Error(std::string("Failed to open ").append(_fname));
+    // header
+    unsigned int i = 0;
+    for (auto it = _header.begin(); it != _header.end(); it++)
+    {
+		_fileStream << *it;
+      if (i < _header.size() - 1)
+        _fileStream << ",";
+      else
+        _fileStream << std::endl;
+      i++;
+    }
+    //content 
+    for (auto it = _content.begin(); it != _content.end(); it++)
+      _fileStream << **it << std::endl;
+    _fileStream.close();
+  }
+
+}
